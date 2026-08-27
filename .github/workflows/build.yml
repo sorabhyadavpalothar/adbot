@@ -1,0 +1,818 @@
+name: Build Python Executables
+
+on:
+  push:
+    branches:
+      - main
+      - "release/**"
+    tags:
+      - "v*"
+
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+# ============================================================
+# BUILD MATRIX
+# ============================================================
+
+jobs:
+  build:
+    name: Build ${{ matrix.platform }}-${{ matrix.arch }}
+
+    strategy:
+      fail-fast: false
+
+      matrix:
+        include:
+          # ==================================================
+          # WINDOWS AMD64
+          # ==================================================
+
+          - platform: windows
+            arch: amd64
+            runner: windows-latest
+            python_arch: x64
+            extension: .exe
+            builder: pyinstaller
+
+          # ==================================================
+          # WINDOWS ARM64
+          #
+          # IMPORTANT:
+          # No windows-11-arm runner.
+          # Uses windows-latest and cross-compilation.
+          # ==================================================
+
+          - platform: windows
+            arch: arm64
+            runner: windows-latest
+            python_arch: x64
+            extension: .exe
+            builder: nuitka-arm64
+
+          # ==================================================
+          # LINUX AMD64
+          # ==================================================
+
+          - platform: linux
+            arch: amd64
+            runner: ubuntu-24.04
+            python_arch: x64
+            extension: ""
+            builder: pyinstaller
+
+          # ==================================================
+          # LINUX ARM64
+          # ==================================================
+
+          - platform: linux
+            arch: arm64
+            runner: ubuntu-24.04-arm
+            python_arch: arm64
+            extension: ""
+            builder: pyinstaller
+
+          # ==================================================
+          # MACOS AMD64 / INTEL
+          # ==================================================
+
+          - platform: darwin
+            arch: amd64
+            runner: macos-15-intel
+            python_arch: x64
+            extension: ""
+            builder: pyinstaller
+
+          # ==================================================
+          # MACOS ARM64 / APPLE SILICON
+          # ==================================================
+
+          - platform: darwin
+            arch: arm64
+            runner: macos-15
+            python_arch: arm64
+            extension: ""
+            builder: pyinstaller
+
+    runs-on: ${{ matrix.runner }}
+
+    steps:
+      # ========================================================
+      # CHECKOUT
+      # ========================================================
+
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      # ========================================================
+      # SYSTEM INFORMATION
+      # ========================================================
+
+      - name: Show System Information
+        shell: bash
+        run: |
+
+          echo "=============================================="
+          echo "BUILD INFORMATION"
+          echo "=============================================="
+
+          echo "Platform      : ${{ matrix.platform }}"
+          echo "Architecture  : ${{ matrix.arch }}"
+          echo "Runner        : ${{ matrix.runner }}"
+          echo "Python Arch   : ${{ matrix.python_arch }}"
+          echo "Builder       : ${{ matrix.builder }}"
+
+          echo ""
+          echo "System Python:"
+          python --version || true
+
+          python -c "
+          import platform
+          import sys
+
+          print('OS            :', platform.system())
+          print('Release       :', platform.release())
+          print('Machine       :', platform.machine())
+          print('Processor     :', platform.processor())
+          print('Python        :', sys.version)
+          print('Python Bits   :', platform.architecture()[0])
+          " || true
+
+          echo "=============================================="
+
+      # ========================================================
+      # SETUP PYTHON
+      # ========================================================
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          architecture: ${{ matrix.python_arch }}
+
+      # ========================================================
+      # VERIFY HOST ARCHITECTURE
+      # ========================================================
+
+      - name: Verify Host Architecture
+        shell: bash
+        run: |
+
+          echo "=============================================="
+          echo "HOST ARCHITECTURE"
+          echo "=============================================="
+
+          MACHINE="$(python -c "import platform; print(platform.machine())")"
+
+          BITS="$(python -c "import platform; print(platform.architecture()[0])")"
+
+          echo "Machine : ${MACHINE}"
+          echo "Bits    : ${BITS}"
+
+          case "${{ matrix.platform }}-${{ matrix.arch }}" in
+
+            windows-amd64)
+              EXPECTED="AMD64"
+              ;;
+
+            windows-arm64)
+              EXPECTED="AMD64"
+              ;;
+
+            linux-amd64)
+              EXPECTED="x86_64"
+              ;;
+
+            linux-arm64)
+              EXPECTED="aarch64"
+              ;;
+
+            darwin-amd64)
+              EXPECTED="x86_64"
+              ;;
+
+            darwin-arm64)
+              EXPECTED="arm64"
+              ;;
+
+          esac
+
+          echo "Expected HOST : ${EXPECTED}"
+
+          if [ "${MACHINE}" != "${EXPECTED}" ]; then
+
+            echo ""
+            echo "ERROR: Host architecture mismatch!"
+            echo "Expected: ${EXPECTED}"
+            echo "Detected: ${MACHINE}"
+
+            exit 1
+
+          fi
+
+          echo ""
+          echo "HOST ARCHITECTURE PASSED"
+
+      # ========================================================
+      # CREATE VIRTUAL ENVIRONMENT
+      # ========================================================
+
+      - name: Create Virtual Environment
+        shell: bash
+        run: |
+
+          echo "=============================================="
+          echo "CREATING VIRTUAL ENVIRONMENT"
+          echo "=============================================="
+
+          python -m venv .venv
+
+
+          if [ "${{ matrix.platform }}" = "windows" ]; then
+
+            PYTHON=".venv/Scripts/python.exe"
+
+          else
+
+            PYTHON=".venv/bin/python"
+
+          fi
+
+
+          "${PYTHON}" -m pip install --upgrade \
+            pip \
+            setuptools \
+            wheel
+
+
+          if [ -f requirements.txt ]; then
+
+            echo "Installing requirements.txt"
+
+            "${PYTHON}" -m pip install \
+              -r requirements.txt
+
+          else
+
+            echo "requirements.txt not found"
+
+          fi
+
+
+          # PyArmor is required by all builds.
+
+          "${PYTHON}" -m pip install \
+            pyarmor
+
+
+          # PyInstaller is required for all native builds
+          # except Windows ARM64.
+
+          if [ "${{ matrix.builder }}" = "pyinstaller" ]; then
+
+            "${PYTHON}" -m pip install \
+              pyinstaller
+
+          fi
+
+
+          echo ""
+          echo "Python:"
+          "${PYTHON}" --version
+
+      # ========================================================
+      # TOOL VERSIONS
+      # ========================================================
+
+      - name: Show Build Tool Versions
+        shell: bash
+        run: |
+
+          echo "=============================================="
+          echo "BUILD TOOLS"
+          echo "=============================================="
+
+
+          if [ "${{ matrix.platform }}" = "windows" ]; then
+            PYTHON=".venv/Scripts/python.exe"
+            PYARMOR=".venv/Scripts/pyarmor.exe"
+          else
+            PYTHON=".venv/bin/python"
+            PYARMOR=".venv/bin/pyarmor"
+          fi
+
+          "${PYTHON}" --version
+          "${PYARMOR}" --version || true
+
+          echo "=============================================="
+
+      # ========================================================
+      # CLEAN
+      # ========================================================
+
+      - name: Clean Build Directories
+        shell: bash
+        run: |
+
+          echo "=============================================="
+          echo "CLEANING BUILD DIRECTORIES"
+          echo "=============================================="
+
+          rm -rf output
+          rm -rf dist
+          rm -rf build
+          rm -rf release
+
+          mkdir -p output
+          mkdir -p dist
+          mkdir -p release
+
+          echo "Clean complete"
+
+      # ========================================================
+      # PYARMOR
+      # ========================================================
+
+      - name: PyArmor Obfuscation
+        shell: bash
+        run: |
+
+          echo "=============================================="
+          echo "PYARMOR OBFUSCATION"
+          echo "=============================================="
+
+          if [ "${{ matrix.platform }}" = "windows" ]; then
+            PYTHON=".venv/Scripts/python.exe"
+            PYARMOR=".venv/Scripts/pyarmor.exe"
+          else
+            PYTHON=".venv/bin/python"
+            PYARMOR=".venv/bin/pyarmor"
+          fi
+
+          "${PYARMOR}" gen \
+            -O output \
+            config \
+            models \
+            utils \
+            engine \
+            handlers/plans \
+            handlers/settings \
+            handlers/topics \
+            handlers/users \
+            templates/inlinebutton \
+            templates/messages
+
+
+          if [ $? -ne 0 ]; then
+
+            echo "ERROR: PyArmor failed"
+
+            exit 1
+
+          fi
+
+
+          echo ""
+          echo "Keeping main.py unobfuscated"
+
+          cp main.py output/main.py
+
+
+          echo ""
+          echo "=============================================="
+          echo "PYARMOR COMPLETE"
+          echo "=============================================="
+
+
+          find output \
+            -maxdepth 3 \
+            -type f \
+            | sort || true
+
+      # ========================================================
+      # WINDOWS AMD64 / LINUX / MACOS
+      # PYINSTALLER
+      # ========================================================
+
+      - name: Build Native Executable
+        if: matrix.builder == 'pyinstaller'
+        shell: bash
+        run: |
+
+          echo "=============================================="
+          echo "PYINSTALLER BUILD"
+          echo "=============================================="
+
+
+          if [ "${{ matrix.platform }}" = "windows" ]; then
+
+            PYTHON=".venv/Scripts/python.exe"
+
+          else
+
+            PYTHON=".venv/bin/python"
+
+          fi
+
+
+          NAME="adbot-${{ matrix.platform }}-${{ matrix.arch }}"
+
+
+          "${PYTHON}" -m PyInstaller \
+            --clean \
+            --noconfirm \
+            --onefile \
+            --name "${NAME}" \
+            --distpath dist \
+            output/main.py
+
+
+          if [ $? -ne 0 ]; then
+
+            echo "ERROR: PyInstaller build failed"
+
+            exit 1
+
+          fi
+
+
+          echo ""
+          echo "=============================================="
+          echo "PYINSTALLER COMPLETE"
+          echo "=============================================="
+
+
+          ls -lah dist
+
+      # ========================================================
+      # WINDOWS ARM64 CROSS COMPILATION
+      #
+      # IMPORTANT:
+      # PyInstaller cannot produce ARM64 from x64 Python.
+      #
+      # This step uses Nuitka with an ARM64 compiler.
+      # ========================================================
+
+      - name: Install Windows ARM64 Toolchain
+        if: matrix.builder == 'nuitka-arm64'
+        shell: pwsh
+        run: |
+
+          Write-Host "=============================================="
+          Write-Host "WINDOWS ARM64 CROSS COMPILER"
+          Write-Host "=============================================="
+
+
+          python -m pip install --upgrade nuitka
+
+
+          Write-Host ""
+          Write-Host "Nuitka version:"
+
+          python -m nuitka --version
+
+
+          Write-Host ""
+          Write-Host "Installing LLVM..."
+
+          choco install llvm -y --no-progress
+
+
+          Write-Host ""
+          Write-Host "LLVM installation complete"
+
+      - name: Build Windows ARM64
+        if: matrix.builder == 'nuitka-arm64'
+        shell: pwsh
+        run: |
+
+          Write-Host "=============================================="
+          Write-Host "WINDOWS ARM64 BUILD"
+          Write-Host "=============================================="
+
+
+          $ErrorActionPreference = "Stop"
+
+
+          $llvm = "${env:ProgramFiles}\LLVM\bin"
+
+
+          if (!(Test-Path "$llvm\clang.exe")) {
+
+              Write-Error "LLVM clang.exe was not found"
+
+              exit 1
+
+          }
+
+
+          $env:PATH = "$llvm;$env:PATH"
+
+
+          Write-Host "LLVM:"
+          & clang --version
+
+
+          Write-Host ""
+          Write-Host "Building ARM64 executable..."
+
+
+          python -m nuitka `
+            --onefile `
+            --standalone `
+            --assume-yes-for-downloads `
+            --output-dir=dist `
+            --output-filename=adbot-windows-arm64.exe `
+            output/main.py
+
+
+          if ($LASTEXITCODE -ne 0) {
+
+              Write-Error "Windows ARM64 build failed"
+
+              exit 1
+
+          }
+
+
+          Write-Host ""
+          Write-Host "Windows ARM64 build complete"
+
+          Get-ChildItem dist
+
+      # ========================================================
+      # VERIFY OUTPUT
+      # ========================================================
+
+      - name: Verify Executable
+        shell: bash
+        run: |
+
+          echo "=============================================="
+          echo "VERIFYING EXECUTABLE"
+          echo "=============================================="
+
+
+          FILE="dist/adbot-${{ matrix.platform }}-${{ matrix.arch }}${{ matrix.extension }}"
+
+
+          echo "Checking: ${FILE}"
+
+
+          if [ ! -f "${FILE}" ]; then
+
+            echo ""
+            echo "ERROR: Executable was not created"
+
+            echo ""
+            echo "dist contents:"
+
+            ls -lah dist
+
+            exit 1
+
+          fi
+
+
+          echo ""
+          echo "Executable found:"
+
+          ls -lh "${FILE}"
+
+      # ========================================================
+      # PREPARE RELEASE
+      # ========================================================
+
+      - name: Prepare Release Directory
+        shell: bash
+        run: |
+
+          echo "=============================================="
+          echo "PREPARING RELEASE"
+          echo "=============================================="
+
+
+          rm -rf release
+
+          mkdir -p release
+
+
+          FILE="dist/adbot-${{ matrix.platform }}-${{ matrix.arch }}${{ matrix.extension }}"
+
+
+          cp "${FILE}" \
+            "release/adbot-${{ matrix.platform }}-${{ matrix.arch }}${{ matrix.extension }}"
+
+
+          echo ""
+          echo "Release files:"
+
+          ls -lah release
+
+      # ========================================================
+      # SHA256
+      # ========================================================
+
+      - name: Generate SHA256
+        shell: bash
+        run: |
+
+          echo "=============================================="
+          echo "GENERATING SHA256"
+          echo "=============================================="
+
+
+          cd release
+
+
+          if command -v sha256sum >/dev/null 2>&1; then
+
+            sha256sum adbot-* > SHA256SUMS
+
+
+          elif command -v shasum >/dev/null 2>&1; then
+
+            shasum -a 256 adbot-* > SHA256SUMS
+
+
+          else
+
+            python - <<'PY'
+
+          import hashlib
+          from pathlib import Path
+
+          output = []
+
+          for path in Path(".").glob("adbot-*"):
+
+              if path.is_file():
+
+                  digest = hashlib.sha256(
+                      path.read_bytes()
+                  ).hexdigest()
+
+                  output.append(
+                      f"{digest}  {path.name}"
+                  )
+
+
+          Path("SHA256SUMS").write_text(
+              "\n".join(output) + "\n"
+          )
+
+          PY
+
+          fi
+
+
+          echo ""
+          echo "=============================================="
+          echo "SHA256"
+          echo "=============================================="
+
+
+          cat SHA256SUMS
+
+      # ========================================================
+      # UPLOAD ARTIFACT
+      # ========================================================
+
+      - name: Upload Build Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: adbot-${{ matrix.platform }}-${{ matrix.arch }}
+          path: release/*
+          if-no-files-found: error
+
+  # ============================================================
+  # RELEASE
+  # ============================================================
+
+  release:
+    name: Create GitHub Release
+
+    needs: build
+
+    runs-on: ubuntu-latest
+
+    steps:
+      # ========================================================
+      # DOWNLOAD ALL ARTIFACTS
+      # ========================================================
+
+      - name: Download Build Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: adbot-*
+          path: release-assets
+          merge-multiple: true
+
+      # ========================================================
+      # LIST RELEASE FILES
+      # ========================================================
+
+      - name: List Release Assets
+        shell: bash
+        run: |
+
+          echo "=============================================="
+          echo "RELEASE ASSETS"
+          echo "=============================================="
+
+
+          find release-assets \
+            -maxdepth 1 \
+            -type f \
+            -printf "%f\n" \
+            | sort
+
+
+          echo "=============================================="
+
+      # ========================================================
+      # COMBINED SHA256
+      # ========================================================
+
+      - name: Generate Combined SHA256
+        shell: bash
+        run: |
+
+          echo "=============================================="
+          echo "COMBINED SHA256"
+          echo "=============================================="
+
+
+          cd release-assets
+
+
+          rm -f SHA256SUMS
+
+
+          sha256sum adbot-* > SHA256SUMS
+
+
+          echo ""
+          cat SHA256SUMS
+
+      # ========================================================
+      # DETERMINE VERSION
+      # ========================================================
+
+      - name: Determine Release Version
+        id: release_version
+        shell: bash
+        run: |
+
+          REF="${GITHUB_REF}"
+          REF_NAME="${GITHUB_REF_NAME}"
+
+
+          echo "Current ref : ${REF}"
+          echo "Ref name    : ${REF_NAME}"
+
+
+          if [[ "${REF}" == refs/tags/v* ]]; then
+
+            TAG="${REF_NAME}"
+
+
+          elif [[ "${REF_NAME}" == release/v* ]]; then
+
+            TAG="${REF_NAME#release/}"
+
+
+          else
+
+            TAG="v3.1.2"
+
+          fi
+
+
+          echo "Release tag : ${TAG}"
+
+
+          echo "tag=${TAG}" >> "${GITHUB_OUTPUT}"
+
+      # ========================================================
+      # CREATE GITHUB RELEASE
+      # ========================================================
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+
+        with:
+          tag_name: ${{ steps.release_version.outputs.tag }}
+
+          name: Release ${{ steps.release_version.outputs.tag }}
+
+          generate_release_notes: true
+
+          files: |
+            release-assets/adbot-*
+            release-assets/SHA256SUMS
+
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

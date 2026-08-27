@@ -30,8 +30,6 @@ Linux Container
          adbot-linux-arm64
 ```
 
-````
-
 Run the installer from PowerShell:
 
 ```powershell
@@ -350,4 +348,3 @@ Add this to `.gitignore`:
 ## 📝 License
 
 Distributed under the MIT License.
-````

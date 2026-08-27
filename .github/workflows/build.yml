@@ -786,7 +786,7 @@ jobs:
 
           else
 
-            TAG="v3.1.2"
+            TAG="v3.1.3"
 
           fi
 
